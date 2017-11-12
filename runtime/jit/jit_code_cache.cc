@@ -18,6 +18,7 @@
 
 #include <sstream>
 
+#include "arch/context.h"
 #include "art_method-inl.h"
 #include "base/enums.h"
 #include "base/stl_util.h"
@@ -33,7 +34,10 @@
 #include "linear_alloc.h"
 #include "mem_map.h"
 #include "oat_file-inl.h"
+#include "oat_quick_method_header.h"
+#include "object_callbacks.h"
 #include "scoped_thread_state_change-inl.h"
+#include "stack.h"
 #include "thread_list.h"
 
 namespace art {
@@ -332,7 +336,8 @@ static uint8_t* GetRootTable(const void* code_ptr, uint32_t* number_of_roots = n
 // Use a sentinel for marking entries in the JIT table that have been cleared.
 // This helps diagnosing in case the compiled code tries to wrongly access such
 // entries.
-static mirror::Class* const weak_sentinel = reinterpret_cast<mirror::Class*>(0x1);
+static mirror::Class* const weak_sentinel =
+    reinterpret_cast<mirror::Class*>(Context::kBadGprBase + 0xff);
 
 // Helper for the GC to process a weak class in a JIT root table.
 static inline void ProcessWeakClass(GcRoot<mirror::Class>* root_ptr,
@@ -524,6 +529,15 @@ void JitCodeCache::CopyInlineCacheInto(const InlineCache& ic,
   }
 }
 
+static void ClearMethodCounter(ArtMethod* method, bool was_warm) {
+  if (was_warm) {
+    method->AddAccessFlags(kAccPreviouslyWarm);
+  }
+  // We reset the counter to 1 so that the profile knows that the method was executed at least once.
+  // This is required for layout purposes.
+  method->SetCounter(1);
+}
+
 uint8_t* JitCodeCache::CommitCodeInternal(Thread* self,
                                           ArtMethod* method,
                                           uint8_t* stack_map,
@@ -595,11 +609,10 @@ uint8_t* JitCodeCache::CommitCodeInternal(Thread* self,
     bool single_impl_still_valid = true;
     for (ArtMethod* single_impl : cha_single_implementation_list) {
       if (!single_impl->HasSingleImplementation()) {
-        // We simply discard the compiled code. Clear the
-        // counter so that it may be recompiled later. Hopefully the
-        // class hierarchy will be more stable when compilation is retried.
+        // Simply discard the compiled code. Clear the counter so that it may be recompiled later.
+        // Hopefully the class hierarchy will be more stable when compilation is retried.
         single_impl_still_valid = false;
-        method->ClearCounter();
+        ClearMethodCounter(method, /*was_warm*/ false);
         break;
       }
     }
@@ -1068,7 +1081,7 @@ void JitCodeCache::DoCollection(Thread* self, bool collect_profiling_info) {
           info->SetSavedEntryPoint(nullptr);
           // We are going to move this method back to interpreter. Clear the counter now to
           // give it a chance to be hot again.
-          info->GetMethod()->ClearCounter();
+          ClearMethodCounter(info->GetMethod(), /*was_warm*/ true);
         }
       }
     } else if (kIsDebugBuild) {
@@ -1297,7 +1310,7 @@ void JitCodeCache::GetProfiledMethods(const std::set<std::string>& dex_base_loca
     }
 
     for (size_t i = 0; i < info->number_of_inline_caches_; ++i) {
-      std::vector<ProfileMethodInfo::ProfileClassReference> profile_classes;
+      std::vector<TypeReference> profile_classes;
       const InlineCache& cache = info->cache_[i];
       ArtMethod* caller = info->GetMethod();
       bool is_missing_types = false;
@@ -1375,10 +1388,9 @@ bool JitCodeCache::NotifyCompilationOf(ArtMethod* method, Thread* self, bool osr
   ProfilingInfo* info = method->GetProfilingInfo(kRuntimePointerSize);
   if (info == nullptr) {
     VLOG(jit) << method->PrettyMethod() << " needs a ProfilingInfo to be compiled";
-    // Because the counter is not atomic, there are some rare cases where we may not
-    // hit the threshold for creating the ProfilingInfo. Reset the counter now to
-    // "correct" this.
-    method->ClearCounter();
+    // Because the counter is not atomic, there are some rare cases where we may not hit the
+    // threshold for creating the ProfilingInfo. Reset the counter now to "correct" this.
+    ClearMethodCounter(method, /*was_warm*/ false);
     return false;
   }
 
@@ -1430,12 +1442,11 @@ void JitCodeCache::InvalidateCompiledCodeFor(ArtMethod* method,
   }
 
   if (method->GetEntryPointFromQuickCompiledCode() == header->GetEntryPoint()) {
-    // The entrypoint is the one to invalidate, so we just update
-    // it to the interpreter entry point and clear the counter to get the method
-    // Jitted again.
+    // The entrypoint is the one to invalidate, so we just update it to the interpreter entry point
+    // and clear the counter to get the method Jitted again.
     Runtime::Current()->GetInstrumentation()->UpdateMethodsCode(
         method, GetQuickToInterpreterBridge());
-    method->ClearCounter();
+    ClearMethodCounter(method, /*was_warm*/ profiling_info != nullptr);
   } else {
     MutexLock mu(Thread::Current(), lock_);
     auto it = osr_code_map_.find(method);

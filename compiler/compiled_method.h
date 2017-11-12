@@ -119,24 +119,24 @@ class LinkerPatch {
   // choose to squeeze the Type into fewer than 8 bits, we'll have to declare
   // patch_type_ as an uintN_t and do explicit static_cast<>s.
   enum class Type : uint8_t {
-    kMethod,
+    kMethodRelative,          // NOTE: Actual patching is instruction_set-dependent.
     kCall,
     kCallRelative,            // NOTE: Actual patching is instruction_set-dependent.
-    kType,
     kTypeRelative,            // NOTE: Actual patching is instruction_set-dependent.
     kTypeBssEntry,            // NOTE: Actual patching is instruction_set-dependent.
-    kString,
     kStringRelative,          // NOTE: Actual patching is instruction_set-dependent.
     kStringBssEntry,          // NOTE: Actual patching is instruction_set-dependent.
     kDexCacheArray,           // NOTE: Actual patching is instruction_set-dependent.
     kBakerReadBarrierBranch,  // NOTE: Actual patching is instruction_set-dependent.
   };
 
-  static LinkerPatch MethodPatch(size_t literal_offset,
-                                 const DexFile* target_dex_file,
-                                 uint32_t target_method_idx) {
-    LinkerPatch patch(literal_offset, Type::kMethod, target_dex_file);
+  static LinkerPatch RelativeMethodPatch(size_t literal_offset,
+                                         const DexFile* target_dex_file,
+                                         uint32_t pc_insn_offset,
+                                         uint32_t target_method_idx) {
+    LinkerPatch patch(literal_offset, Type::kMethodRelative, target_dex_file);
     patch.method_idx_ = target_method_idx;
+    patch.pc_insn_offset_ = pc_insn_offset;
     return patch;
   }
 
@@ -153,14 +153,6 @@ class LinkerPatch {
                                        uint32_t target_method_idx) {
     LinkerPatch patch(literal_offset, Type::kCallRelative, target_dex_file);
     patch.method_idx_ = target_method_idx;
-    return patch;
-  }
-
-  static LinkerPatch TypePatch(size_t literal_offset,
-                               const DexFile* target_dex_file,
-                               uint32_t target_type_idx) {
-    LinkerPatch patch(literal_offset, Type::kType, target_dex_file);
-    patch.type_idx_ = target_type_idx;
     return patch;
   }
 
@@ -181,14 +173,6 @@ class LinkerPatch {
     LinkerPatch patch(literal_offset, Type::kTypeBssEntry, target_dex_file);
     patch.type_idx_ = target_type_idx;
     patch.pc_insn_offset_ = pc_insn_offset;
-    return patch;
-  }
-
-  static LinkerPatch StringPatch(size_t literal_offset,
-                                 const DexFile* target_dex_file,
-                                 uint32_t target_string_idx) {
-    LinkerPatch patch(literal_offset, Type::kString, target_dex_file);
-    patch.string_idx_ = target_string_idx;
     return patch;
   }
 
@@ -244,6 +228,7 @@ class LinkerPatch {
 
   bool IsPcRelative() const {
     switch (GetType()) {
+      case Type::kMethodRelative:
       case Type::kCallRelative:
       case Type::kTypeRelative:
       case Type::kTypeBssEntry:
@@ -258,36 +243,32 @@ class LinkerPatch {
   }
 
   MethodReference TargetMethod() const {
-    DCHECK(patch_type_ == Type::kMethod ||
+    DCHECK(patch_type_ == Type::kMethodRelative ||
            patch_type_ == Type::kCall ||
            patch_type_ == Type::kCallRelative);
     return MethodReference(target_dex_file_, method_idx_);
   }
 
   const DexFile* TargetTypeDexFile() const {
-    DCHECK(patch_type_ == Type::kType ||
-           patch_type_ == Type::kTypeRelative ||
+    DCHECK(patch_type_ == Type::kTypeRelative ||
            patch_type_ == Type::kTypeBssEntry);
     return target_dex_file_;
   }
 
   dex::TypeIndex TargetTypeIndex() const {
-    DCHECK(patch_type_ == Type::kType ||
-           patch_type_ == Type::kTypeRelative ||
+    DCHECK(patch_type_ == Type::kTypeRelative ||
            patch_type_ == Type::kTypeBssEntry);
     return dex::TypeIndex(type_idx_);
   }
 
   const DexFile* TargetStringDexFile() const {
-    DCHECK(patch_type_ == Type::kString ||
-           patch_type_ == Type::kStringRelative ||
+    DCHECK(patch_type_ == Type::kStringRelative ||
            patch_type_ == Type::kStringBssEntry);
     return target_dex_file_;
   }
 
   dex::StringIndex TargetStringIndex() const {
-    DCHECK(patch_type_ == Type::kString ||
-           patch_type_ == Type::kStringRelative ||
+    DCHECK(patch_type_ == Type::kStringRelative ||
            patch_type_ == Type::kStringBssEntry);
     return dex::StringIndex(string_idx_);
   }
@@ -303,7 +284,8 @@ class LinkerPatch {
   }
 
   uint32_t PcInsnOffset() const {
-    DCHECK(patch_type_ == Type::kTypeRelative ||
+    DCHECK(patch_type_ == Type::kMethodRelative ||
+           patch_type_ == Type::kTypeRelative ||
            patch_type_ == Type::kTypeBssEntry ||
            patch_type_ == Type::kStringRelative ||
            patch_type_ == Type::kStringBssEntry ||

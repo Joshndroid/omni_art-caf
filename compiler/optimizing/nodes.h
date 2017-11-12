@@ -47,6 +47,7 @@ namespace art {
 
 class GraphChecker;
 class HBasicBlock;
+class HConstructorFence;
 class HCurrentMethod;
 class HDoubleConstant;
 class HEnvironment;
@@ -58,6 +59,7 @@ class HIntConstant;
 class HInvoke;
 class HLongConstant;
 class HNullConstant;
+class HParameterValue;
 class HPhi;
 class HSuspendCheck;
 class HTryBoundary;
@@ -537,6 +539,12 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
   uint32_t GetMethodIdx() const {
     return method_idx_;
   }
+
+  // Get the method name (without the signature), e.g. "<init>"
+  const char* GetMethodName() const;
+
+  // Get the pretty method name (class + name + optionally signature).
+  std::string PrettyMethod(bool with_signature = true) const;
 
   InvokeType GetInvokeType() const {
     return invoke_type_;
@@ -1298,6 +1306,7 @@ class HLoopInformationOutwardIterator : public ValueObject {
   M(ClearException, Instruction)                                        \
   M(ClinitCheck, Instruction)                                           \
   M(Compare, BinaryOperation)                                           \
+  M(ConstructorFence, Instruction)                                      \
   M(CurrentMethod, Instruction)                                         \
   M(ShouldDeoptimizeFlag, Instruction)                                  \
   M(Deoptimize, Instruction)                                            \
@@ -1397,7 +1406,8 @@ class HLoopInformationOutwardIterator : public ValueObject {
   M(BitwiseNegatedRight, Instruction)                                   \
   M(DataProcWithShifterOp, Instruction)                                 \
   M(MultiplyAccumulate, Instruction)                                    \
-  M(IntermediateAddress, Instruction)
+  M(IntermediateAddress, Instruction)                                   \
+  M(IntermediateAddressIndex, Instruction)
 #endif
 
 #ifndef ART_ENABLE_CODEGEN_arm
@@ -1477,8 +1487,11 @@ FOR_EACH_INSTRUCTION(FORWARD_DECLARATION)
 template <typename T>
 class HUseListNode : public ArenaObject<kArenaAllocUseListNode> {
  public:
+  // Get the instruction which has this use as one of the inputs.
   T GetUser() const { return user_; }
+  // Get the position of the input record that this use corresponds to.
   size_t GetIndex() const { return index_; }
+  // Set the position of the input record that this use corresponds to.
   void SetIndex(size_t index) { index_ = index; }
 
   // Hook for the IntrusiveForwardList<>.
@@ -1777,7 +1790,7 @@ class HEnvironment : public ArenaObject<kArenaAllocEnvironment> {
                              uint32_t dex_pc,
                              HInstruction* holder)
      : vregs_(number_of_vregs, arena->Adapter(kArenaAllocEnvironmentVRegs)),
-       locations_(number_of_vregs, arena->Adapter(kArenaAllocEnvironmentLocations)),
+       locations_(arena->Adapter(kArenaAllocEnvironmentLocations)),
        parent_(nullptr),
        method_(method),
        dex_pc_(dex_pc),
@@ -1790,6 +1803,11 @@ class HEnvironment : public ArenaObject<kArenaAllocEnvironment> {
                      to_copy.GetMethod(),
                      to_copy.GetDexPc(),
                      holder) {}
+
+  void AllocateLocations() {
+    DCHECK(locations_.empty());
+    locations_.resize(vregs_.size());
+  }
 
   void SetAndCopyParentChain(ArenaAllocator* allocator, HEnvironment* parent) {
     if (parent_ != nullptr) {
@@ -2038,7 +2056,8 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
         !IsNativeDebugInfo() &&
         !IsParameterValue() &&
         // If we added an explicit barrier then we should keep it.
-        !IsMemoryBarrier();
+        !IsMemoryBarrier() &&
+        !IsConstructorFence();
   }
 
   bool IsDeadAndRemovable() const {
@@ -2431,6 +2450,11 @@ class HVariableInputSizeInstruction : public HInstruction {
   void AddInput(HInstruction* input);
   void InsertInputAt(size_t index, HInstruction* input);
   void RemoveInputAt(size_t index);
+
+  // Removes all the inputs.
+  // Also removes this instructions from each input's use list
+  // (for non-environment uses only).
+  void RemoveAllInputs();
 
  protected:
   HVariableInputSizeInstruction(SideEffects side_effects,
@@ -4134,6 +4158,10 @@ class HInvokeStaticOrDirect FINAL : public HInvoke {
     // Use the method's own ArtMethod* loaded by the register allocator.
     kRecursive,
 
+    // Use PC-relative boot image ArtMethod* address that will be known at link time.
+    // Used for boot image methods referenced by boot image code.
+    kBootImageLinkTimePcRelative,
+
     // Use ArtMethod* at a known address, embed the direct address in the code.
     // Used for app->boot calls with non-relocatable image and for JIT-compiled calls.
     kDirectAddress,
@@ -4272,6 +4300,10 @@ class HInvokeStaticOrDirect FINAL : public HInvoke {
   bool HasMethodAddress() const { return GetMethodLoadKind() == MethodLoadKind::kDirectAddress; }
   bool HasPcRelativeDexCache() const {
     return GetMethodLoadKind() == MethodLoadKind::kDexCachePcRelative;
+  }
+  bool HasPcRelativeMethodLoadKind() const {
+    return GetMethodLoadKind() == MethodLoadKind::kBootImageLinkTimePcRelative ||
+           GetMethodLoadKind() == MethodLoadKind::kDexCachePcRelative;
   }
   bool HasCurrentMethodInput() const {
     // This function can be called only after the invoke has been fully initialized by the builder.
@@ -5063,7 +5095,7 @@ class HParameterValue FINAL : public HExpression<0> {
   const DexFile& GetDexFile() const { return dex_file_; }
   dex::TypeIndex GetTypeIndex() const { return type_index_; }
   uint8_t GetIndex() const { return index_; }
-  bool IsThis() const ATTRIBUTE_UNUSED { return GetPackedFlag<kFlagIsThis>(); }
+  bool IsThis() const { return GetPackedFlag<kFlagIsThis>(); }
 
   bool CanBeNull() const OVERRIDE { return GetPackedFlag<kFlagCanBeNull>(); }
   void SetCanBeNull(bool can_be_null) { SetPackedFlag<kFlagCanBeNull>(can_be_null); }
@@ -5371,10 +5403,16 @@ class HArrayGet FINAL : public HExpression<2> {
   }
   bool CanDoImplicitNullCheckOn(HInstruction* obj ATTRIBUTE_UNUSED) const OVERRIDE {
     // TODO: We can be smarter here.
-    // Currently, the array access is always preceded by an ArrayLength or a NullCheck
-    // which generates the implicit null check. There are cases when these can be removed
-    // to produce better code. If we ever add optimizations to do so we should allow an
-    // implicit check here (as long as the address falls in the first page).
+    // Currently, unless the array is the result of NewArray, the array access is always
+    // preceded by some form of null NullCheck necessary for the bounds check, usually
+    // implicit null check on the ArrayLength input to BoundsCheck or Deoptimize for
+    // dynamic BCE. There are cases when these could be removed to produce better code.
+    // If we ever add optimizations to do so we should allow an implicit check here
+    // (as long as the address falls in the first page).
+    //
+    // As an example of such fancy optimization, we could eliminate BoundsCheck for
+    //     a = cond ? new int[1] : null;
+    //     a[0];  // The Phi does not need bounds check for either input.
     return false;
   }
 
@@ -5639,12 +5677,8 @@ class HLoadClass FINAL : public HInstruction {
     // Use the Class* from the method's own ArtMethod*.
     kReferrersClass,
 
-    // Use boot image Class* address that will be known at link time.
-    // Used for boot image classes referenced by boot image code in non-PIC mode.
-    kBootImageLinkTimeAddress,
-
     // Use PC-relative boot image Class* address that will be known at link time.
-    // Used for boot image classes referenced by boot image code in PIC mode.
+    // Used for boot image classes referenced by boot image code.
     kBootImageLinkTimePcRelative,
 
     // Use a known boot image Class* address, embedded in the code by the codegen.
@@ -5658,12 +5692,11 @@ class HLoadClass FINAL : public HInstruction {
     // Load from the root table associated with the JIT compiled method.
     kJitTableAddress,
 
-    // Load from resolved types array accessed through the class loaded from
-    // the compiled method's own ArtMethod*. This is the default access type when
-    // all other types are unavailable.
-    kDexCacheViaMethod,
+    // Load using a simple runtime call. This is the fall-back load kind when
+    // the codegen is unable to use another appropriate kind.
+    kRuntimeCall,
 
-    kLast = kDexCacheViaMethod
+    kLast = kRuntimeCall
   };
 
   HLoadClass(HCurrentMethod* current_method,
@@ -5684,7 +5717,7 @@ class HLoadClass FINAL : public HInstruction {
     DCHECK(!is_referrers_class || !needs_access_check);
 
     SetPackedField<LoadKindField>(
-        is_referrers_class ? LoadKind::kReferrersClass : LoadKind::kDexCacheViaMethod);
+        is_referrers_class ? LoadKind::kReferrersClass : LoadKind::kRuntimeCall);
     SetPackedFlag<kFlagNeedsAccessCheck>(needs_access_check);
     SetPackedFlag<kFlagIsInBootImage>(false);
     SetPackedFlag<kFlagGenerateClInitCheck>(false);
@@ -5718,7 +5751,7 @@ class HLoadClass FINAL : public HInstruction {
   bool CanCallRuntime() const {
     return NeedsAccessCheck() ||
            MustGenerateClinitCheck() ||
-           GetLoadKind() == LoadKind::kDexCacheViaMethod ||
+           GetLoadKind() == LoadKind::kRuntimeCall ||
            GetLoadKind() == LoadKind::kBssEntry;
   }
 
@@ -5728,7 +5761,7 @@ class HLoadClass FINAL : public HInstruction {
            // If the class is in the boot image, the lookup in the runtime call cannot throw.
            // This keeps CanThrow() consistent between non-PIC (using kBootImageAddress) and
            // PIC and subsequently avoids a DCE behavior dependency on the PIC option.
-           ((GetLoadKind() == LoadKind::kDexCacheViaMethod ||
+           ((GetLoadKind() == LoadKind::kRuntimeCall ||
              GetLoadKind() == LoadKind::kBssEntry) &&
             !IsInBootImage());
   }
@@ -5747,7 +5780,7 @@ class HLoadClass FINAL : public HInstruction {
   const DexFile& GetDexFile() const { return dex_file_; }
 
   bool NeedsDexCacheOfDeclaringClass() const OVERRIDE {
-    return GetLoadKind() == LoadKind::kDexCacheViaMethod;
+    return GetLoadKind() == LoadKind::kRuntimeCall;
   }
 
   static SideEffects SideEffectsForArchRuntimeCalls() {
@@ -5796,15 +5829,14 @@ class HLoadClass FINAL : public HInstruction {
 
   static bool HasTypeReference(LoadKind load_kind) {
     return load_kind == LoadKind::kReferrersClass ||
-        load_kind == LoadKind::kBootImageLinkTimeAddress ||
         load_kind == LoadKind::kBootImageLinkTimePcRelative ||
         load_kind == LoadKind::kBssEntry ||
-        load_kind == LoadKind::kDexCacheViaMethod;
+        load_kind == LoadKind::kRuntimeCall;
   }
 
   void SetLoadKindInternal(LoadKind load_kind);
 
-  // The special input is the HCurrentMethod for kDexCacheViaMethod or kReferrersClass.
+  // The special input is the HCurrentMethod for kRuntimeCall or kReferrersClass.
   // For other load kinds it's empty or possibly some architecture-specific instruction
   // for PC-relative loads, i.e. kBssEntry or kBootImageLinkTimePcRelative.
   HUserRecord<HInstruction*> special_input_;
@@ -5813,7 +5845,7 @@ class HLoadClass FINAL : public HInstruction {
   // - The compiling method's dex file if the class is defined there too.
   // - The compiling method's dex file if the class is referenced there.
   // - The dex file where the class is defined. When the load kind can only be
-  //   kBssEntry or kDexCacheViaMethod, we cannot emit code for this `HLoadClass`.
+  //   kBssEntry or kRuntimeCall, we cannot emit code for this `HLoadClass`.
   const dex::TypeIndex type_index_;
   const DexFile& dex_file_;
 
@@ -5830,7 +5862,6 @@ inline void HLoadClass::AddSpecialInput(HInstruction* special_input) {
   // The special input is used for PC-relative loads on some architectures,
   // including literal pool loads, which are PC-relative too.
   DCHECK(GetLoadKind() == LoadKind::kBootImageLinkTimePcRelative ||
-         GetLoadKind() == LoadKind::kBootImageLinkTimeAddress ||
          GetLoadKind() == LoadKind::kBootImageAddress ||
          GetLoadKind() == LoadKind::kBssEntry) << GetLoadKind();
   DCHECK(special_input_.GetInstruction() == nullptr);
@@ -5842,12 +5873,8 @@ class HLoadString FINAL : public HInstruction {
  public:
   // Determines how to load the String.
   enum class LoadKind {
-    // Use boot image String* address that will be known at link time.
-    // Used for boot image strings referenced by boot image code in non-PIC mode.
-    kBootImageLinkTimeAddress,
-
     // Use PC-relative boot image String* address that will be known at link time.
-    // Used for boot image strings referenced by boot image code in PIC mode.
+    // Used for boot image strings referenced by boot image code.
     kBootImageLinkTimePcRelative,
 
     // Use a known boot image String* address, embedded in the code by the codegen.
@@ -5861,12 +5888,11 @@ class HLoadString FINAL : public HInstruction {
     // Load from the root table associated with the JIT compiled method.
     kJitTableAddress,
 
-    // Load from resolved strings array accessed through the class loaded from
-    // the compiled method's own ArtMethod*. This is the default access type when
-    // all other types are unavailable.
-    kDexCacheViaMethod,
+    // Load using a simple runtime call. This is the fall-back load kind when
+    // the codegen is unable to use another appropriate kind.
+    kRuntimeCall,
 
-    kLast = kDexCacheViaMethod,
+    kLast = kRuntimeCall,
   };
 
   HLoadString(HCurrentMethod* current_method,
@@ -5877,7 +5903,7 @@ class HLoadString FINAL : public HInstruction {
         special_input_(HUserRecord<HInstruction*>(current_method)),
         string_index_(string_index),
         dex_file_(dex_file) {
-    SetPackedField<LoadKindField>(LoadKind::kDexCacheViaMethod);
+    SetPackedField<LoadKindField>(LoadKind::kRuntimeCall);
   }
 
   void SetLoadKind(LoadKind load_kind);
@@ -5912,8 +5938,7 @@ class HLoadString FINAL : public HInstruction {
   // the dex cache and the string is not guaranteed to be there yet.
   bool NeedsEnvironment() const OVERRIDE {
     LoadKind load_kind = GetLoadKind();
-    if (load_kind == LoadKind::kBootImageLinkTimeAddress ||
-        load_kind == LoadKind::kBootImageLinkTimePcRelative ||
+    if (load_kind == LoadKind::kBootImageLinkTimePcRelative ||
         load_kind == LoadKind::kBootImageAddress ||
         load_kind == LoadKind::kJitTableAddress) {
       return false;
@@ -5922,7 +5947,7 @@ class HLoadString FINAL : public HInstruction {
   }
 
   bool NeedsDexCacheOfDeclaringClass() const OVERRIDE {
-    return GetLoadKind() == LoadKind::kDexCacheViaMethod;
+    return GetLoadKind() == LoadKind::kRuntimeCall;
   }
 
   bool CanBeNull() const OVERRIDE { return false; }
@@ -5956,7 +5981,7 @@ class HLoadString FINAL : public HInstruction {
 
   void SetLoadKindInternal(LoadKind load_kind);
 
-  // The special input is the HCurrentMethod for kDexCacheViaMethod.
+  // The special input is the HCurrentMethod for kRuntimeCall.
   // For other load kinds it's empty or possibly some architecture-specific instruction
   // for PC-relative loads, i.e. kBssEntry or kBootImageLinkTimePcRelative.
   HUserRecord<HInstruction*> special_input_;
@@ -5976,7 +6001,6 @@ inline void HLoadString::AddSpecialInput(HInstruction* special_input) {
   // including literal pool loads, which are PC-relative too.
   DCHECK(GetLoadKind() == LoadKind::kBootImageLinkTimePcRelative ||
          GetLoadKind() == LoadKind::kBssEntry ||
-         GetLoadKind() == LoadKind::kBootImageLinkTimeAddress ||
          GetLoadKind() == LoadKind::kBootImageAddress) << GetLoadKind();
   // HLoadString::GetInputRecords() returns an empty array at this point,
   // so use the GetInputRecords() from the base class to set the input record.
@@ -6493,6 +6517,145 @@ class HMemoryBarrier FINAL : public HTemplateInstruction<0> {
   using BarrierKindField = BitField<MemBarrierKind, kFieldBarrierKind, kFieldBarrierKindSize>;
 
   DISALLOW_COPY_AND_ASSIGN(HMemoryBarrier);
+};
+
+// A constructor fence orders all prior stores to fields that could be accessed via a final field of
+// the specified object(s), with respect to any subsequent store that might "publish"
+// (i.e. make visible) the specified object to another thread.
+//
+// JLS 17.5.1 "Semantics of final fields" states that a freeze action happens
+// for all final fields (that were set) at the end of the invoked constructor.
+//
+// The constructor fence models the freeze actions for the final fields of an object
+// being constructed (semantically at the end of the constructor). Constructor fences
+// have a per-object affinity; two separate objects being constructed get two separate
+// constructor fences.
+//
+// (Note: that if calling a super-constructor or forwarding to another constructor,
+// the freezes would happen at the end of *that* constructor being invoked).
+//
+// The memory model guarantees that when the object being constructed is "published" after
+// constructor completion (i.e. escapes the current thread via a store), then any final field
+// writes must be observable on other threads (once they observe that publication).
+//
+// Further, anything written before the freeze, and read by dereferencing through the final field,
+// must also be visible (so final object field could itself have an object with non-final fields;
+// yet the freeze must also extend to them).
+//
+// Constructor example:
+//
+//     class HasFinal {
+//        final int field;                              Optimizing IR for <init>()V:
+//        HasFinal() {
+//          field = 123;                                HInstanceFieldSet(this, HasFinal.field, 123)
+//          // freeze(this.field);                      HConstructorFence(this)
+//        }                                             HReturn
+//     }
+//
+// HConstructorFence can serve double duty as a fence for new-instance/new-array allocations of
+// already-initialized classes; in that case the allocation must act as a "default-initializer"
+// of the object which effectively writes the class pointer "final field".
+//
+// For example, we can model default-initialiation as roughly the equivalent of the following:
+//
+//     class Object {
+//       private final Class header;
+//     }
+//
+//  Java code:                                           Optimizing IR:
+//
+//     T new_instance<T>() {
+//       Object obj = allocate_memory(T.class.size);     obj = HInvoke(art_quick_alloc_object, T)
+//       obj.header = T.class;                           // header write is done by above call.
+//       // freeze(obj.header)                           HConstructorFence(obj)
+//       return (T)obj;
+//     }
+//
+// See also:
+// * CompilerDriver::RequiresConstructorBarrier
+// * QuasiAtomic::ThreadFenceForConstructor
+//
+class HConstructorFence FINAL : public HVariableInputSizeInstruction {
+                                  // A fence has variable inputs because the inputs can be removed
+                                  // after prepare_for_register_allocation phase.
+                                  // (TODO: In the future a fence could freeze multiple objects
+                                  //        after merging two fences together.)
+ public:
+  // `fence_object` is the reference that needs to be protected for correct publication.
+  //
+  // It makes sense in the following situations:
+  // * <init> constructors, it's the "this" parameter (i.e. HParameterValue, s.t. IsThis() == true).
+  // * new-instance-like instructions, it's the return value (i.e. HNewInstance).
+  //
+  // After construction the `fence_object` becomes the 0th input.
+  // This is not an input in a real sense, but just a convenient place to stash the information
+  // about the associated object.
+  HConstructorFence(HInstruction* fence_object,
+                    uint32_t dex_pc,
+                    ArenaAllocator* arena)
+    // We strongly suspect there is not a more accurate way to describe the fine-grained reordering
+    // constraints described in the class header. We claim that these SideEffects constraints
+    // enforce a superset of the real constraints.
+    //
+    // The ordering described above is conservatively modeled with SideEffects as follows:
+    //
+    // * To prevent reordering of the publication stores:
+    // ----> "Reads of objects" is the initial SideEffect.
+    // * For every primitive final field store in the constructor:
+    // ----> Union that field's type as a read (e.g. "Read of T") into the SideEffect.
+    // * If there are any stores to reference final fields in the constructor:
+    // ----> Use a more conservative "AllReads" SideEffect because any stores to any references
+    //       that are reachable from `fence_object` also need to be prevented for reordering
+    //       (and we do not want to do alias analysis to figure out what those stores are).
+    //
+    // In the implementation, this initially starts out as an "all reads" side effect; this is an
+    // even more conservative approach than the one described above, and prevents all of the
+    // above reordering without analyzing any of the instructions in the constructor.
+    //
+    // If in a later phase we discover that there are no writes to reference final fields,
+    // we can refine the side effect to a smaller set of type reads (see above constraints).
+      : HVariableInputSizeInstruction(SideEffects::AllReads(),
+                                      dex_pc,
+                                      arena,
+                                      /* number_of_inputs */ 1,
+                                      kArenaAllocConstructorFenceInputs) {
+    DCHECK(fence_object != nullptr);
+    SetRawInputAt(0, fence_object);
+  }
+
+  // The object associated with this constructor fence.
+  //
+  // (Note: This will be null after the prepare_for_register_allocation phase,
+  // as all constructor fence inputs are removed there).
+  HInstruction* GetFenceObject() const {
+    return InputAt(0);
+  }
+
+  // Find all the HConstructorFence uses (`fence_use`) for `this` and:
+  // - Delete `fence_use` from `this`'s use list.
+  // - Delete `this` from `fence_use`'s inputs list.
+  // - If the `fence_use` is dead, remove it from the graph.
+  //
+  // A fence is considered dead once it no longer has any uses
+  // and all of the inputs are dead.
+  //
+  // This must *not* be called during/after prepare_for_register_allocation,
+  // because that removes all the inputs to the fences but the fence is actually
+  // still considered live.
+  static void RemoveConstructorFences(HInstruction* instruction);
+
+  // Check if this constructor fence is protecting
+  // an HNewInstance or HNewArray that is also the immediate
+  // predecessor of `this`.
+  //
+  // Returns the associated HNewArray or HNewInstance,
+  // or null otherwise.
+  HInstruction* GetAssociatedAllocation();
+
+  DECLARE_INSTRUCTION(ConstructorFence);
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(HConstructorFence);
 };
 
 class HMonitorOperation FINAL : public HTemplateInstruction<1> {

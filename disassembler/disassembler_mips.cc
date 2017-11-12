@@ -433,6 +433,11 @@ static const MipsInstruction gMipsInstructions[] = {
   { kMsaMask | (0x7 << 23), kMsa | (0x5 << 23) | 0x12, "div_u", "Vkmn" },
   { kMsaMask | (0x7 << 23), kMsa | (0x6 << 23) | 0x12, "mod_s", "Vkmn" },
   { kMsaMask | (0x7 << 23), kMsa | (0x7 << 23) | 0x12, "mod_u", "Vkmn" },
+  { kMsaMask | (0x7 << 23), kMsa | (0x0 << 23) | 0x10, "add_a", "Vkmn" },
+  { kMsaMask | (0x7 << 23), kMsa | (0x4 << 23) | 0x10, "ave_s", "Vkmn" },
+  { kMsaMask | (0x7 << 23), kMsa | (0x5 << 23) | 0x10, "ave_u", "Vkmn" },
+  { kMsaMask | (0x7 << 23), kMsa | (0x6 << 23) | 0x10, "aver_s", "Vkmn" },
+  { kMsaMask | (0x7 << 23), kMsa | (0x7 << 23) | 0x10, "aver_u", "Vkmn" },
   { kMsaMask | (0xf << 22), kMsa | (0x0 << 22) | 0x1b, "fadd", "Ukmn" },
   { kMsaMask | (0xf << 22), kMsa | (0x1 << 22) | 0x1b, "fsub", "Ukmn" },
   { kMsaMask | (0xf << 22), kMsa | (0x2 << 22) | 0x1b, "fmul", "Ukmn" },
@@ -451,6 +456,7 @@ static const MipsInstruction gMipsInstructions[] = {
   { kMsaMask | (0x7 << 23), kMsa | (0x6 << 23) | 0x7, "ldi", "kx" },
   { kMsaSpecialMask | (0xf << 2), kMsa | (0x8 << 2), "ld", "kw" },
   { kMsaSpecialMask | (0xf << 2), kMsa | (0x9 << 2), "st", "kw" },
+  { kMsaMask | (0x7 << 23), kMsa | (0x5 << 23) | 0x14, "ilvr", "Vkmn" },
 };
 
 static uint32_t ReadU32(const uint8_t* ptr) {

@@ -54,6 +54,7 @@ cc_defaults {
         "compiler_filter.cc",
         "debugger.cc",
         "dex_file.cc",
+        "dex_file_tracking_registrar.cc",
         "dex_file_annotations.cc",
         "dex_file_verifier.cc",
         "dex_instruction.cc",
@@ -123,6 +124,7 @@ cc_defaults {
         "jni_internal.cc",
         "jobject_comparator.cc",
         "linear_alloc.cc",
+        "managed_stack.cc",
         "mem_map.cc",
         "memory_region.cc",
         "method_handles.cc",
@@ -352,6 +354,7 @@ cc_defaults {
                 "libdl",
                 // For android::FileMap used by libziparchive.
                 "libutils",
+                "libtombstoned_client"
             ],
             static_libs: [
                 // ZipArchive support, the order matters here to get all symbols.
@@ -539,7 +542,6 @@ art_cc_test {
         "dex_file_test.cc",
         "dex_file_verifier_test.cc",
         "dex_instruction_test.cc",
-        "dex_instruction_visitor_test.cc",
         "dex_method_iterator_test.cc",
         "entrypoints/math_entrypoints_test.cc",
         "entrypoints/quick/quick_trampoline_entrypoints_test.cc",

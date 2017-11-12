@@ -74,6 +74,7 @@
 #include "mirror/class_loader.h"
 #include "mirror/object-inl.h"
 #include "mirror/object_array-inl.h"
+#include "oat_file.h"
 #include "oat_file_assistant.h"
 #include "oat_writer.h"
 #include "os.h"
@@ -357,23 +358,23 @@ NO_RETURN static void Usage(const char* fmt, ...) {
   UsageError("  --profile-file-fd=<number>: same as --profile-file but accepts a file descriptor.");
   UsageError("      Cannot be used together with --profile-file.");
   UsageError("");
-  UsageError("  --swap-file=<file-name>:  specifies a file to use for swap.");
+  UsageError("  --swap-file=<file-name>: specifies a file to use for swap.");
   UsageError("      Example: --swap-file=/data/tmp/swap.001");
   UsageError("");
-  UsageError("  --swap-fd=<file-descriptor>:  specifies a file to use for swap (by descriptor).");
+  UsageError("  --swap-fd=<file-descriptor>: specifies a file to use for swap (by descriptor).");
   UsageError("      Example: --swap-fd=10");
   UsageError("");
-  UsageError("  --swap-dex-size-threshold=<size>:  specifies the minimum total dex file size in");
+  UsageError("  --swap-dex-size-threshold=<size>: specifies the minimum total dex file size in");
   UsageError("      bytes to allow the use of swap.");
   UsageError("      Example: --swap-dex-size-threshold=1000000");
   UsageError("      Default: %zu", kDefaultMinDexFileCumulativeSizeForSwap);
   UsageError("");
-  UsageError("  --swap-dex-count-threshold=<count>:  specifies the minimum number of dex files to");
+  UsageError("  --swap-dex-count-threshold=<count>: specifies the minimum number of dex files to");
   UsageError("      allow the use of swap.");
   UsageError("      Example: --swap-dex-count-threshold=10");
   UsageError("      Default: %zu", kDefaultMinDexFilesForSwap);
   UsageError("");
-  UsageError("  --very-large-app-threshold=<size>:  specifies the minimum total dex file size in");
+  UsageError("  --very-large-app-threshold=<size>: specifies the minimum total dex file size in");
   UsageError("      bytes to consider the input \"very large\" and punt on the compilation.");
   UsageError("      Example: --very-large-app-threshold=100000000");
   UsageError("");
@@ -387,6 +388,14 @@ NO_RETURN static void Usage(const char* fmt, ...) {
              "input dex file.");
   UsageError("");
   UsageError("  --force-determinism: force the compiler to emit a deterministic output.");
+  UsageError("");
+  UsageError("  --dump-cfg=<cfg-file>: dump control-flow graphs (CFGs) to specified file.");
+  UsageError("      Example: --dump-cfg=output.cfg");
+  UsageError("");
+  UsageError("  --dump-cfg-append: when dumping CFGs to an existing file, append new CFG data to");
+  UsageError("      existing data (instead of overwriting existing data with new data, which is");
+  UsageError("      the default behavior). This option is only meaningful when used with");
+  UsageError("      --dump-cfg.");
   UsageError("");
   UsageError("  --classpath-dir=<directory-path>: directory used to resolve relative class paths.");
   UsageError("");
@@ -477,6 +486,16 @@ class WatchDog {
                                        android::base::LogId::DEFAULT,
                                        LogSeverity::FATAL,
                                        message.c_str());
+    // If we're on the host, try to dump all threads to get a sense of what's going on. This is
+    // restricted to the host as the dump may itself go bad.
+    // TODO: Use a double watchdog timeout, so we can enable this on-device.
+    if (!kIsTargetBuild && Runtime::Current() != nullptr) {
+      Runtime::Current()->AttachCurrentThread("Watchdog thread attached for dumping",
+                                              true,
+                                              nullptr,
+                                              false);
+      Runtime::Current()->DumpForSigQuit(std::cerr);
+    }
     exit(1);
   }
 
@@ -1103,7 +1122,7 @@ class Dex2Oat FINAL {
     original_argc = argc;
     original_argv = argv;
 
-    InitLogging(argv, Runtime::Aborter);
+    InitLogging(argv, Runtime::Abort);
 
     // Skip over argv[0].
     argv++;
@@ -2433,6 +2452,8 @@ class Dex2Oat FINAL {
     if (!IsBootImage()) {
       raw_options.push_back(std::make_pair("-Xno-dex-file-fallback", nullptr));
     }
+    // Never allow implicit image compilation.
+    raw_options.push_back(std::make_pair("-Xnoimage-dex2oat", nullptr));
     // Disable libsigchain. We don't don't need it during compilation and it prevents us
     // from getting a statically linked version of dex2oat (because of dlsym and RTLD_NEXT).
     raw_options.push_back(std::make_pair("-Xno-sig-chain", nullptr));

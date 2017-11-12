@@ -34,10 +34,7 @@
 #include "experimental_flags.h"
 #include "gc_root.h"
 #include "instrumentation.h"
-#include "jobject_comparator.h"
-#include "method_reference.h"
 #include "obj_ptr.h"
-#include "object_callbacks.h"
 #include "offsets.h"
 #include "process_state.h"
 #include "quick/quick_method_frame_info.h"
@@ -48,9 +45,6 @@ namespace art {
 namespace gc {
   class AbstractSystemWeakHolder;
   class Heap;
-  namespace collector {
-    class GarbageCollector;
-  }  // namespace collector
 }  // namespace gc
 
 namespace jit {
@@ -79,12 +73,13 @@ class ArenaPool;
 class ArtMethod;
 class ClassHierarchyAnalysis;
 class ClassLinker;
-class Closure;
 class CompilerCallbacks;
 class DexFile;
 class InternTable;
+class IsMarkedVisitor;
 class JavaVMExt;
 class LinearAlloc;
+class MemMap;
 class MonitorList;
 class MonitorPool;
 class NullPointerHandler;
@@ -339,11 +334,6 @@ class Runtime {
 
   void VisitTransactionRoots(RootVisitor* visitor)
       REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // Flip thread roots from from-space refs to to-space refs.
-  size_t FlipThreadRoots(Closure* thread_flip_visitor, Closure* flip_callback,
-                         gc::collector::GarbageCollector* collector)
-      REQUIRES(!Locks::mutator_lock_);
 
   // Sweep system weaks, the system weak is deleted if the visitor return null. Otherwise, the
   // system weak is updated to be the visitor's returned value.
@@ -667,9 +657,6 @@ class Runtime {
     return cha_;
   }
 
-  NO_RETURN
-  static void Aborter(const char* abort_message);
-
   void AttachAgent(const std::string& agent_arg);
 
   const std::list<ti::Agent>& GetAgents() const {
@@ -799,6 +786,13 @@ class Runtime {
   ClassLinker* class_linker_;
 
   SignalCatcher* signal_catcher_;
+
+  // If true, the runtime will connect to tombstoned via a socket to
+  // request an open file descriptor to write its traces to.
+  bool use_tombstoned_traces_;
+
+  // Location to which traces must be written on SIGQUIT. Only used if
+  // tombstoned_traces_ == false.
   std::string stack_trace_file_;
 
   std::unique_ptr<JavaVMExt> java_vm_;
@@ -957,6 +951,8 @@ class Runtime {
 
   std::atomic<uint32_t> deoptimization_counts_[
       static_cast<uint32_t>(DeoptimizationKind::kLast) + 1];
+
+  std::unique_ptr<MemMap> protected_fault_page_;
 
   DISALLOW_COPY_AND_ASSIGN(Runtime);
 };

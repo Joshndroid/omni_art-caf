@@ -23,13 +23,14 @@
 #include "handle.h"
 #include "jvalue.h"
 #include "mirror/class.h"
+#include "stack.h"
 
 namespace art {
 
 namespace mirror {
   class MethodHandle;
   class MethodType;
-}  // mirror
+}  // namespace mirror
 
 class ShadowFrame;
 

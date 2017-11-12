@@ -27,6 +27,7 @@
 #include "dex_file_annotations.h"
 #include "dex_file-inl.h"
 #include "gc_root-inl.h"
+#include "invoke_type.h"
 #include "jit/profiling_info.h"
 #include "mirror/class-inl.h"
 #include "mirror/dex_cache-inl.h"
@@ -36,10 +37,9 @@
 #include "oat.h"
 #include "obj_ptr-inl.h"
 #include "quick/quick_method_frame_info.h"
-#include "read_barrier-inl.h"
 #include "runtime-inl.h"
 #include "scoped_thread_state_change-inl.h"
-#include "thread-inl.h"
+#include "thread-current-inl.h"
 #include "utils.h"
 
 namespace art {

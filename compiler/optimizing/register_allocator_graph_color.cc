@@ -20,7 +20,7 @@
 #include "linear_order.h"
 #include "register_allocation_resolver.h"
 #include "ssa_liveness_analysis.h"
-#include "thread-inl.h"
+#include "thread-current-inl.h"
 
 namespace art {
 
@@ -1968,8 +1968,7 @@ void RegisterAllocatorGraphColor::ColorSpillSlots(ArenaVector<LiveInterval*>* in
   ArenaVector<std::tuple<size_t, bool, LiveInterval*>> interval_endpoints(
       allocator_->Adapter(kArenaAllocRegisterAllocator));
 
-  for (auto it = intervals->begin(), e = intervals->end(); it != e; ++it) {
-    LiveInterval* parent_interval = *it;
+  for (LiveInterval* parent_interval : *intervals) {
     DCHECK(parent_interval->IsParent());
     DCHECK(!parent_interval->HasSpillSlot());
     size_t start = parent_interval->GetStart();

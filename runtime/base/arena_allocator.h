@@ -59,6 +59,7 @@ enum ArenaAllocKind {
   kArenaAllocSuccessors,
   kArenaAllocDominated,
   kArenaAllocInstruction,
+  kArenaAllocConstructorFenceInputs,
   kArenaAllocInvokeInputs,
   kArenaAllocPhiInputs,
   kArenaAllocLoopInfo,
@@ -195,7 +196,6 @@ class ArenaAllocatorMemoryTool : private ArenaAllocatorMemoryToolCheck {
 
 class Arena {
  public:
-  static constexpr size_t kDefaultSize = 128 * KB;
   Arena();
   virtual ~Arena() { }
   // Reset is for pre-use and uses memset for performance.

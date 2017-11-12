@@ -40,7 +40,7 @@ DEFINE_CHECK_EQ(static_cast<int32_t>(THREAD_FLAGS_OFFSET), (static_cast<int32_t>
 DEFINE_CHECK_EQ(static_cast<int32_t>(THREAD_ID_OFFSET), (static_cast<int32_t>(art::Thread:: ThinLockIdOffset<art::kRuntimePointerSize>().Int32Value())))
 #define THREAD_IS_GC_MARKING_OFFSET 52
 DEFINE_CHECK_EQ(static_cast<int32_t>(THREAD_IS_GC_MARKING_OFFSET), (static_cast<int32_t>(art::Thread:: IsGcMarkingOffset<art::kRuntimePointerSize>().Int32Value())))
-#define THREAD_CARD_TABLE_OFFSET 128
+#define THREAD_CARD_TABLE_OFFSET 136
 DEFINE_CHECK_EQ(static_cast<int32_t>(THREAD_CARD_TABLE_OFFSET), (static_cast<int32_t>(art::Thread:: CardTableOffset<art::kRuntimePointerSize>().Int32Value())))
 #define CODEITEM_INSNS_OFFSET 16
 DEFINE_CHECK_EQ(static_cast<int32_t>(CODEITEM_INSNS_OFFSET), (static_cast<int32_t>(__builtin_offsetof(art::DexFile::CodeItem, insns_))))
@@ -78,6 +78,8 @@ DEFINE_CHECK_EQ(static_cast<int32_t>(STRING_DEX_CACHE_SIZE_MINUS_ONE), (static_c
 DEFINE_CHECK_EQ(static_cast<int32_t>(STRING_DEX_CACHE_HASH_BITS), (static_cast<int32_t>(art::LeastSignificantBit(art::mirror::DexCache::kDexCacheStringCacheSize))))
 #define STRING_DEX_CACHE_ELEMENT_SIZE 8
 DEFINE_CHECK_EQ(static_cast<int32_t>(STRING_DEX_CACHE_ELEMENT_SIZE), (static_cast<int32_t>(sizeof(art::mirror::StringDexCachePair))))
+#define CARD_TABLE_CARD_SHIFT 0xa
+DEFINE_CHECK_EQ(static_cast<size_t>(CARD_TABLE_CARD_SHIFT), (static_cast<size_t>(art::gc::accounting::CardTable::kCardShift)))
 #define MIN_LARGE_OBJECT_THRESHOLD 0x3000
 DEFINE_CHECK_EQ(static_cast<size_t>(MIN_LARGE_OBJECT_THRESHOLD), (static_cast<size_t>(art::gc::Heap::kMinLargeObjectThreshold)))
 #define LOCK_WORD_STATE_SHIFT 30

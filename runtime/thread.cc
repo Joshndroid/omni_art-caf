@@ -35,6 +35,7 @@
 #include "android-base/stringprintf.h"
 
 #include "arch/context.h"
+#include "arch/context-inl.h"
 #include "art_field-inl.h"
 #include "art_method-inl.h"
 #include "base/bit_utils.h"
@@ -54,6 +55,7 @@
 #include "gc/allocator/rosalloc.h"
 #include "gc/heap.h"
 #include "gc/space/space-inl.h"
+#include "gc_root.h"
 #include "handle_scope-inl.h"
 #include "indirect_reference_table-inl.h"
 #include "java_vm_ext.h"
@@ -128,12 +130,12 @@ static void UnimplementedEntryPoint() {
 }
 
 void InitEntryPoints(JniEntryPoints* jpoints, QuickEntryPoints* qpoints);
-void UpdateReadBarrierEntrypoints(QuickEntryPoints* qpoints, bool is_marking);
+void UpdateReadBarrierEntrypoints(QuickEntryPoints* qpoints, bool is_active);
 
 void Thread::SetIsGcMarkingAndUpdateEntrypoints(bool is_marking) {
   CHECK(kUseReadBarrier);
   tls32_.is_gc_marking = is_marking;
-  UpdateReadBarrierEntrypoints(&tlsPtr_.quick_entrypoints, is_marking);
+  UpdateReadBarrierEntrypoints(&tlsPtr_.quick_entrypoints, /* is_active */ is_marking);
   ResetQuickAllocEntryPointsForThread(is_marking);
 }
 
@@ -545,27 +547,47 @@ void Thread::InstallImplicitProtection() {
   //
   // We map in the stack by reading every page from the stack bottom (highest address)
   // to the stack top. (We then madvise this away.) This must be done by reading from the
-  // current stack pointer downwards. Any access more than a page below the current SP
-  // might cause a segv.
-  // TODO: This comment may be out of date. It seems possible to speed this up. As
-  //       this is normally done once in the zygote on startup, ignore for now.
+  // current stack pointer downwards.
   //
-  // AddressSanitizer does not like the part of this functions that reads every stack page.
-  // Looks a lot like an out-of-bounds access.
+  // Accesses too far below the current machine register corresponding to the stack pointer (e.g.,
+  // ESP on x86[-32], SP on ARM) might cause a SIGSEGV (at least on x86 with newer kernels). We
+  // thus have to move the stack pointer. We do this portably by using a recursive function with a
+  // large stack frame size.
 
-  // (Defensively) first remove the protection on the protected region as will want to read
+  // (Defensively) first remove the protection on the protected region as we'll want to read
   // and write it. Ignore errors.
   UnprotectStack();
 
   VLOG(threads) << "Need to map in stack for thread at " << std::hex <<
       static_cast<void*>(pregion);
 
-  // Read every page from the high address to the low.
-  volatile uint8_t dont_optimize_this;
-  UNUSED(dont_optimize_this);
-  for (uint8_t* p = stack_top; p >= pregion; p -= kPageSize) {
-    dont_optimize_this = *p;
-  }
+  struct RecurseDownStack {
+    // This function has an intentionally large stack size.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wframe-larger-than="
+    NO_INLINE
+    static void Touch(uintptr_t target) {
+      volatile size_t zero = 0;
+      // Use a large local volatile array to ensure a large frame size. Do not use anything close
+      // to a full page for ASAN. It would be nice to ensure the frame size is at most a page, but
+      // there is no pragma support for this.
+      // Note: for ASAN we need to shrink the array a bit, as there's other overhead.
+      constexpr size_t kAsanMultiplier =
+#ifdef ADDRESS_SANITIZER
+          2u;
+#else
+          1u;
+#endif
+      volatile char space[kPageSize - (kAsanMultiplier * 256)];
+      char sink ATTRIBUTE_UNUSED = space[zero];
+      if (reinterpret_cast<uintptr_t>(space) >= target + kPageSize) {
+        Touch(target);
+      }
+      zero *= 2;  // Try to avoid tail recursion.
+    }
+#pragma GCC diagnostic pop
+  };
+  RecurseDownStack::Touch(reinterpret_cast<uintptr_t>(pregion));
 
   VLOG(threads) << "(again) installing stack protected region at " << std::hex <<
       static_cast<void*>(pregion) << " to " <<
@@ -1963,7 +1985,6 @@ void Thread::Shutdown() {
 Thread::Thread(bool daemon)
     : tls32_(daemon),
       wait_monitor_(nullptr),
-      interrupted_(false),
       custom_tls_(nullptr),
       can_call_into_java_(true) {
   wait_mutex_ = new Mutex("a thread wait mutex");
@@ -1975,6 +1996,7 @@ Thread::Thread(bool daemon)
                 "art::Thread has a size which is not a multiple of 4.");
   tls32_.state_and_flags.as_struct.flags = 0;
   tls32_.state_and_flags.as_struct.state = kNative;
+  tls32_.interrupted.StoreRelaxed(false);
   memset(&tlsPtr_.held_mutexes[0], 0, sizeof(tlsPtr_.held_mutexes));
   std::fill(tlsPtr_.rosalloc_runs,
             tlsPtr_.rosalloc_runs + kNumRosAllocThreadLocalSizeBracketsInThread,
@@ -2159,7 +2181,7 @@ Thread::~Thread() {
   TearDownAlternateSignalStack();
 }
 
-void Thread::HandleUncaughtExceptions(ScopedObjectAccess& soa) {
+void Thread::HandleUncaughtExceptions(ScopedObjectAccessAlreadyRunnable& soa) {
   if (!IsExceptionPending()) {
     return;
   }
@@ -2179,7 +2201,7 @@ void Thread::HandleUncaughtExceptions(ScopedObjectAccess& soa) {
   tlsPtr_.jni_env->ExceptionClear();
 }
 
-void Thread::RemoveFromThreadGroup(ScopedObjectAccess& soa) {
+void Thread::RemoveFromThreadGroup(ScopedObjectAccessAlreadyRunnable& soa) {
   // this.group.removeThread(this);
   // group can be null if we're in the compiler or a test.
   ObjPtr<mirror::Object> ogroup = jni::DecodeArtField(WellKnownClasses::java_lang_Thread_group)
@@ -2268,24 +2290,26 @@ bool Thread::IsJWeakCleared(jweak obj) const {
 
 // Implements java.lang.Thread.interrupted.
 bool Thread::Interrupted() {
-  MutexLock mu(Thread::Current(), *wait_mutex_);
-  bool interrupted = IsInterruptedLocked();
-  SetInterruptedLocked(false);
+  DCHECK_EQ(Thread::Current(), this);
+  // No other thread can concurrently reset the interrupted flag.
+  bool interrupted = tls32_.interrupted.LoadSequentiallyConsistent();
+  if (interrupted) {
+    tls32_.interrupted.StoreSequentiallyConsistent(false);
+  }
   return interrupted;
 }
 
 // Implements java.lang.Thread.isInterrupted.
 bool Thread::IsInterrupted() {
-  MutexLock mu(Thread::Current(), *wait_mutex_);
-  return IsInterruptedLocked();
+  return tls32_.interrupted.LoadSequentiallyConsistent();
 }
 
 void Thread::Interrupt(Thread* self) {
   MutexLock mu(self, *wait_mutex_);
-  if (interrupted_) {
+  if (tls32_.interrupted.LoadSequentiallyConsistent()) {
     return;
   }
-  interrupted_ = true;
+  tls32_.interrupted.StoreSequentiallyConsistent(true);
   NotifyLocked(self);
 }
 
@@ -3413,11 +3437,10 @@ void Thread::VisitRoots(RootVisitor* visitor) {
     verifier->VisitRoots(visitor, RootInfo(kRootNativeStack, thread_id));
   }
   // Visit roots on this thread's stack
-  Context* context = GetLongJumpContext();
+  RuntimeContextType context;
   RootCallbackVisitor visitor_to_callback(visitor, thread_id);
-  ReferenceMapVisitor<RootCallbackVisitor, kPrecise> mapper(this, context, visitor_to_callback);
+  ReferenceMapVisitor<RootCallbackVisitor, kPrecise> mapper(this, &context, visitor_to_callback);
   mapper.template WalkStack<StackVisitor::CountTransitions::kNo>(false);
-  ReleaseLongJumpContext(context);
   for (instrumentation::InstrumentationStackFrame& frame : *GetInstrumentationStack()) {
     visitor->VisitRootIfNonNull(&frame.this_object_, RootInfo(kRootVMInternal, thread_id));
   }
@@ -3440,11 +3463,13 @@ class VerifyRootVisitor : public SingleRootVisitor {
 };
 
 void Thread::VerifyStackImpl() {
-  VerifyRootVisitor visitor;
-  std::unique_ptr<Context> context(Context::Create());
-  RootCallbackVisitor visitor_to_callback(&visitor, GetThreadId());
-  ReferenceMapVisitor<RootCallbackVisitor> mapper(this, context.get(), visitor_to_callback);
-  mapper.WalkStack();
+  if (Runtime::Current()->GetHeap()->IsObjectValidationEnabled()) {
+    VerifyRootVisitor visitor;
+    std::unique_ptr<Context> context(Context::Create());
+    RootCallbackVisitor visitor_to_callback(&visitor, GetThreadId());
+    ReferenceMapVisitor<RootCallbackVisitor> mapper(this, context.get(), visitor_to_callback);
+    mapper.WalkStack();
+  }
 }
 
 // Set the stack end to that to be used during a stack overflow
@@ -3602,6 +3627,11 @@ mirror::Object* Thread::GetPeerFromOtherThread() const {
     peer = art::ReadBarrier::Mark(peer);
   }
   return peer;
+}
+
+void Thread::SetReadBarrierEntrypoints() {
+  // Make sure entrypoints aren't null.
+  UpdateReadBarrierEntrypoints(&tlsPtr_.quick_entrypoints, /* is_active*/ true);
 }
 
 }  // namespace art

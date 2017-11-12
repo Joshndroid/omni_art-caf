@@ -1557,7 +1557,7 @@ void DexLayout::LayoutStringData(const DexFile* dex_file) {
             (method->GetAccessFlags() & kAccConstructor) != 0 &&
             (method->GetAccessFlags() & kAccStatic) != 0;
         const bool method_executed = is_clinit ||
-            info_->ContainsMethod(MethodReference(dex_file, method_id->GetIndex()));
+            info_->IsStartupOrHotMethod(MethodReference(dex_file, method_id->GetIndex()));
         if (!method_executed) {
           continue;
         }
@@ -1699,7 +1699,7 @@ int32_t DexLayout::LayoutCodeItems(const DexFile* dex_file,
             (method->GetAccessFlags() & kAccConstructor) != 0 &&
             (method->GetAccessFlags() & kAccStatic) != 0;
         const bool is_method_executed = is_clinit ||
-            info_->ContainsMethod(MethodReference(dex_file, method_id->GetIndex()));
+            info_->IsStartupOrHotMethod(MethodReference(dex_file, method_id->GetIndex()));
         code_items[is_method_executed
                        ? CodeItemKind::kMethodExecuted
                        : CodeItemKind::kMethodNotExecuted]
@@ -1909,7 +1909,7 @@ void DexLayout::OutputDexFile(const DexFile* dex_file) {
   }
   // Do IR-level comparison between input and output. This check ignores potential differences
   // due to layout, so offsets are not checked. Instead, it checks the data contents of each item.
-  if (options_.verify_output_) {
+  if (kIsDebugBuild || options_.verify_output_) {
     std::unique_ptr<dex_ir::Header> orig_header(dex_ir::DexIrBuilder(*dex_file));
     CHECK(VerifyOutputDexFile(orig_header.get(), header_, &error_msg)) << error_msg;
   }

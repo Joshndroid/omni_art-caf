@@ -58,7 +58,7 @@
 #include "parallel_move_resolver.h"
 #include "ssa_liveness_analysis.h"
 #include "scoped_thread_state_change-inl.h"
-#include "thread-inl.h"
+#include "thread-current-inl.h"
 #include "utils/assembler.h"
 
 namespace art {
@@ -145,7 +145,7 @@ size_t CodeGenerator::GetCacheOffset(uint32_t index) {
 }
 
 size_t CodeGenerator::GetCachePointerOffset(uint32_t index) {
-  auto pointer_size = InstructionSetPointerSize(GetInstructionSet());
+  PointerSize pointer_size = InstructionSetPointerSize(GetInstructionSet());
   return static_cast<size_t>(pointer_size) * index;
 }
 
@@ -508,7 +508,7 @@ void CodeGenerator::GenerateUnresolvedFieldAccess(
 void CodeGenerator::CreateLoadClassRuntimeCallLocationSummary(HLoadClass* cls,
                                                               Location runtime_type_index_location,
                                                               Location runtime_return_location) {
-  DCHECK_EQ(cls->GetLoadKind(), HLoadClass::LoadKind::kDexCacheViaMethod);
+  DCHECK_EQ(cls->GetLoadKind(), HLoadClass::LoadKind::kRuntimeCall);
   DCHECK_EQ(cls->InputCount(), 1u);
   LocationSummary* locations = new (cls->GetBlock()->GetGraph()->GetArena()) LocationSummary(
       cls, LocationSummary::kCallOnMainOnly);
@@ -518,7 +518,7 @@ void CodeGenerator::CreateLoadClassRuntimeCallLocationSummary(HLoadClass* cls,
 }
 
 void CodeGenerator::GenerateLoadClassRuntimeCall(HLoadClass* cls) {
-  DCHECK_EQ(cls->GetLoadKind(), HLoadClass::LoadKind::kDexCacheViaMethod);
+  DCHECK_EQ(cls->GetLoadKind(), HLoadClass::LoadKind::kRuntimeCall);
   LocationSummary* locations = cls->GetLocations();
   MoveConstant(locations->GetTemp(0), cls->GetTypeIndex().index_);
   if (cls->NeedsAccessCheck()) {
@@ -557,6 +557,9 @@ void CodeGenerator::BlockIfInRegister(Location location, bool is_out) const {
 }
 
 void CodeGenerator::AllocateLocations(HInstruction* instruction) {
+  for (HEnvironment* env = instruction->GetEnvironment(); env != nullptr; env = env->GetParent()) {
+    env->AllocateLocations();
+  }
   instruction->Accept(GetLocationBuilder());
   DCHECK(CheckTypeConsistency(instruction));
   LocationSummary* locations = instruction->GetLocations();
@@ -1398,20 +1401,6 @@ void CodeGenerator::CreateSystemArrayCopyLocationSummary(HInvoke* invoke) {
   locations->AddTemp(Location::RequiresRegister());
   locations->AddTemp(Location::RequiresRegister());
   locations->AddTemp(Location::RequiresRegister());
-}
-
-uint32_t CodeGenerator::GetReferenceSlowFlagOffset() const {
-  ScopedObjectAccess soa(Thread::Current());
-  mirror::Class* klass = mirror::Reference::GetJavaLangRefReference();
-  DCHECK(klass->IsInitialized());
-  return klass->GetSlowPathFlagOffset().Uint32Value();
-}
-
-uint32_t CodeGenerator::GetReferenceDisableFlagOffset() const {
-  ScopedObjectAccess soa(Thread::Current());
-  mirror::Class* klass = mirror::Reference::GetJavaLangRefReference();
-  DCHECK(klass->IsInitialized());
-  return klass->GetDisableIntrinsicFlagOffset().Uint32Value();
 }
 
 void CodeGenerator::EmitJitRoots(uint8_t* code,

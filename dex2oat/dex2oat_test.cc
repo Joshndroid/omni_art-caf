@@ -28,6 +28,7 @@
 
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/mutex-inl.h"
 #include "dex_file-inl.h"
 #include "dex2oat_environment_test.h"
 #include "dex2oat_return_codes.h"
@@ -37,6 +38,8 @@
 #include "utils.h"
 
 namespace art {
+
+static constexpr size_t kMaxMethodIds = 65535;
 
 using android::base::StringPrintf;
 
@@ -430,6 +433,9 @@ class Dex2oatSwapUseTest : public Dex2oatSwapTest {
 };
 
 TEST_F(Dex2oatSwapUseTest, CheckSwapUsage) {
+  // Native memory usage isn't correctly tracked under sanitization.
+  TEST_DISABLED_FOR_MEMORY_TOOL_ASAN();
+
   // The `native_alloc_2_ >= native_alloc_1_` assertion below may not
   // hold true on some x86 systems; disable this test while we
   // investigate (b/29259363).
@@ -609,7 +615,7 @@ class Dex2oatLayoutTest : public Dex2oatTest {
     ProfileCompilationInfo info;
     std::string profile_key = ProfileCompilationInfo::GetProfileDexFileKey(dex_location);
     for (size_t i = 0; i < num_classes; ++i) {
-      info.AddClassIndex(profile_key, checksum, dex::TypeIndex(1 + i));
+      info.AddClassIndex(profile_key, checksum, dex::TypeIndex(1 + i), kMaxMethodIds);
     }
     bool result = info.Save(profile_test_fd);
     close(profile_test_fd);
@@ -884,6 +890,7 @@ class Dex2oatReturnCodeTest : public Dex2oatTest {
 };
 
 TEST_F(Dex2oatReturnCodeTest, TestCreateRuntime) {
+  TEST_DISABLED_FOR_MEMORY_TOOL();  // b/19100793
   int status = RunTest({ "--boot-image=/this/does/not/exist/yolo.oat" });
   EXPECT_EQ(static_cast<int>(dex2oat::ReturnCode::kCreateRuntime), WEXITSTATUS(status)) << output_;
 }

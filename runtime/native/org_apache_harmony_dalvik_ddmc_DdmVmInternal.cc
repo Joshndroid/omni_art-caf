@@ -16,10 +16,14 @@
 
 #include "org_apache_harmony_dalvik_ddmc_DdmVmInternal.h"
 
+#include "nativehelper/jni_macros.h"
+
 #include "base/logging.h"
 #include "base/mutex.h"
 #include "debugger.h"
+#include "gc/heap.h"
 #include "jni_internal.h"
+#include "native_util.h"
 #include "scoped_fast_native_object_access-inl.h"
 #include "ScopedLocalRef.h"
 #include "ScopedPrimitiveArray.h"

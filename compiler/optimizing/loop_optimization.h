@@ -71,6 +71,8 @@ class HLoopOptimization : public HOptimization {
     kNoSignedHAdd    = 32,   // no signed halving add
     kNoUnroundedHAdd = 64,   // no unrounded halving add
     kNoAbs           = 128,  // no absolute value
+    kNoMinMax        = 256,  // no min/max
+    kNoStringCharAt  = 512,  // no StringCharAt
   };
 
   /*
@@ -136,7 +138,11 @@ class HLoopOptimization : public HOptimization {
                       HInstruction* opa,
                       HInstruction* opb,
                       Primitive::Type type);
-  void GenerateVecOp(HInstruction* org, HInstruction* opa, HInstruction* opb, Primitive::Type type);
+  void GenerateVecOp(HInstruction* org,
+                     HInstruction* opa,
+                     HInstruction* opb,
+                     Primitive::Type type,
+                     bool is_unsigned = false);
 
   // Vectorization idioms.
   bool VectorizeHalvingAddIdiom(LoopNode* node,

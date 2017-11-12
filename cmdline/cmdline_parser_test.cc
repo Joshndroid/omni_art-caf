@@ -22,6 +22,7 @@
 #include <numeric>
 #include "gtest/gtest.h"
 #include "runtime/experimental_flags.h"
+#include "runtime/runtime.h"
 
 #define EXPECT_NULL(expected) EXPECT_EQ(reinterpret_cast<const void*>(expected), \
                                         reinterpret_cast<void*>(nullptr));
@@ -122,7 +123,7 @@ class CmdlineParserTest : public ::testing::Test {
   using RuntimeParser = ParsedOptions::RuntimeParser;
 
   static void SetUpTestCase() {
-    art::InitLogging(nullptr, art::Runtime::Aborter);  // argv = null
+    art::InitLogging(nullptr, art::Runtime::Abort);  // argv = null
   }
 
   virtual void SetUp() {

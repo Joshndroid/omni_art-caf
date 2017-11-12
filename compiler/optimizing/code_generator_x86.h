@@ -408,14 +408,14 @@ class CodeGeneratorX86 : public CodeGenerator {
       HInvokeStaticOrDirect* invoke) OVERRIDE;
 
   // Generate a call to a static or direct method.
-  Location GenerateCalleeMethodStaticOrDirectCall(HInvokeStaticOrDirect* invoke, Location temp);
   void GenerateStaticOrDirectCall(HInvokeStaticOrDirect* invoke, Location temp) OVERRIDE;
   // Generate a call to a virtual method.
   void GenerateVirtualCall(HInvokeVirtual* invoke, Location temp) OVERRIDE;
 
-  void RecordBootStringPatch(HLoadString* load_string);
+  void RecordBootMethodPatch(HInvokeStaticOrDirect* invoke);
   void RecordBootTypePatch(HLoadClass* load_class);
   Label* NewTypeBssEntryPatch(HLoadClass* load_class);
+  void RecordBootStringPatch(HLoadString* load_string);
   Label* NewStringBssEntryPatch(HLoadString* load_string);
   Label* NewPcRelativeDexCacheArrayPatch(HX86ComputeBaseMethodAddress* method_address,
                                          const DexFile& dex_file,
@@ -633,16 +633,17 @@ class CodeGeneratorX86 : public CodeGenerator {
 
   // PC-relative DexCache access info.
   ArenaDeque<X86PcRelativePatchInfo> pc_relative_dex_cache_patches_;
-  // String patch locations; type depends on configuration (app .bss or boot image PIC/non-PIC).
-  ArenaDeque<X86PcRelativePatchInfo> string_patches_;
-  // Type patch locations for boot image; type depends on configuration (boot image PIC/non-PIC).
+  // PC-relative method patch info for kBootImageLinkTimePcRelative.
+  ArenaDeque<X86PcRelativePatchInfo> boot_image_method_patches_;
+  // PC-relative type patch info for kBootImageLinkTimePcRelative.
   ArenaDeque<X86PcRelativePatchInfo> boot_image_type_patches_;
   // Type patch locations for kBssEntry.
   ArenaDeque<X86PcRelativePatchInfo> type_bss_entry_patches_;
+  // String patch locations; type depends on configuration (app .bss or boot image).
+  ArenaDeque<X86PcRelativePatchInfo> string_patches_;
 
   // Patches for string root accesses in JIT compiled code.
   ArenaDeque<PatchInfo<Label>> jit_string_patches_;
-
   // Patches for class root accesses in JIT compiled code.
   ArenaDeque<PatchInfo<Label>> jit_class_patches_;
 

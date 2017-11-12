@@ -98,8 +98,11 @@ class CommonRuntimeTestImpl {
   // Returns bin directory which contains host's prebuild tools.
   static std::string GetAndroidHostToolsDir();
 
-  // Returns bin directory wahich contains target's prebuild tools.
+  // Returns bin directory which contains target's prebuild tools.
   static std::string GetAndroidTargetToolsDir(InstructionSet isa);
+
+  // Retuerns the filename for a test dex (i.e. XandY or ManyMethods).
+  std::string GetTestDexFileName(const char* name) const;
 
  protected:
   // Allow subclases such as CommonCompilerTest to add extra options.
@@ -126,8 +129,6 @@ class CommonRuntimeTestImpl {
   void ClearDirectory(const char* dirpath);
 
   std::string GetTestAndroidRoot();
-
-  std::string GetTestDexFileName(const char* name) const;
 
   std::vector<std::unique_ptr<const DexFile>> OpenTestDexFiles(const char* name);
 
@@ -240,6 +241,18 @@ class CheckJniAbortCatcher {
 #define TEST_DISABLED_FOR_NON_STATIC_HOST_BUILDS() \
   if (!kHostStaticBuildEnabled) { \
     printf("WARNING: TEST DISABLED FOR NON-STATIC HOST BUILDS\n"); \
+    return; \
+  }
+
+#define TEST_DISABLED_FOR_MEMORY_TOOL() \
+  if (RUNNING_ON_MEMORY_TOOL > 0) { \
+    printf("WARNING: TEST DISABLED FOR MEMORY TOOL\n"); \
+    return; \
+  }
+
+#define TEST_DISABLED_FOR_MEMORY_TOOL_ASAN() \
+  if (RUNNING_ON_MEMORY_TOOL > 0 && !kMemoryToolIsValgrind) { \
+    printf("WARNING: TEST DISABLED FOR MEMORY TOOL ASAN\n"); \
     return; \
   }
 

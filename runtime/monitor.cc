@@ -31,7 +31,9 @@
 #include "lock_word-inl.h"
 #include "mirror/class-inl.h"
 #include "mirror/object-inl.h"
+#include "object_callbacks.h"
 #include "scoped_thread_state_change-inl.h"
+#include "stack.h"
 #include "thread.h"
 #include "thread_list.h"
 #include "verifier/method_verifier.h"
@@ -437,17 +439,11 @@ void Monitor::Lock(Thread* self) {
                     << " in " << ArtMethod::PrettyMethod(m) << " for "
                     << PrettyDuration(MsToNs(wait_ms));
               }
-              const char* owners_filename;
-              int32_t owners_line_number;
-              TranslateLocation(owners_method,
-                                owners_dex_pc,
-                                &owners_filename,
-                                &owners_line_number);
               LogContentionEvent(self,
                                  wait_ms,
                                  sample_percent,
-                                 owners_filename,
-                                 owners_line_number);
+                                 owners_method,
+                                 owners_dex_pc);
             }
           }
         }
@@ -662,7 +658,7 @@ void Monitor::Wait(Thread* self, int64_t ms, int32_t ns,
     monitor_lock_.Unlock(self);
 
     // Handle the case where the thread was interrupted before we called wait().
-    if (self->IsInterruptedLocked()) {
+    if (self->IsInterrupted()) {
       was_interrupted = true;
     } else {
       // Wait for a notification or a timeout to occur.
@@ -672,7 +668,7 @@ void Monitor::Wait(Thread* self, int64_t ms, int32_t ns,
         DCHECK(why == kTimedWaiting || why == kSleeping) << why;
         self->GetWaitConditionVariable()->TimedWait(self, ms, ns);
       }
-      was_interrupted = self->IsInterruptedLocked();
+      was_interrupted = self->IsInterrupted();
     }
   }
 
@@ -697,10 +693,7 @@ void Monitor::Wait(Thread* self, int64_t ms, int32_t ns,
      * The doc sayeth: "The interrupted status of the current thread is
      * cleared when this exception is thrown."
      */
-    {
-      MutexLock mu(self, *self->GetWaitMutex());
-      self->SetInterruptedLocked(false);
-    }
+    self->SetInterrupted(false);
     self->ThrowNewException("Ljava/lang/InterruptedException;", nullptr);
   }
 

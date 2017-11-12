@@ -28,13 +28,12 @@
 #include "base/stl_util.h"
 #include "base/unix_file/fd_file.h"
 #include "class_linker.h"
-#include "compiled_class.h"
 #include "compiled_method.h"
 #include "debug/method_debug_info.h"
 #include "dex/verification_results.h"
 #include "dex_file-inl.h"
 #include "dexlayout.h"
-#include "driver/compiler_driver.h"
+#include "driver/compiler_driver-inl.h"
 #include "driver/compiler_options.h"
 #include "gc/space/image_space.h"
 #include "gc/space/space.h"
@@ -712,17 +711,17 @@ class OatWriter::InitOatClassesMethodVisitor : public DexMethodVisitor {
 
   bool EndClass() {
     ClassReference class_ref(dex_file_, class_def_index_);
-    CompiledClass* compiled_class = writer_->compiler_driver_->GetCompiledClass(class_ref);
     mirror::Class::Status status;
-    if (compiled_class != nullptr) {
-      status = compiled_class->GetStatus();
-    } else if (writer_->compiler_driver_->GetVerificationResults()->IsClassRejected(class_ref)) {
-      // The oat class status is used only for verification of resolved classes,
-      // so use kStatusErrorResolved whether the class was resolved or unresolved
-      // during compile-time verification.
-      status = mirror::Class::kStatusErrorResolved;
-    } else {
-      status = mirror::Class::kStatusNotReady;
+    bool found = writer_->compiler_driver_->GetCompiledClass(class_ref, &status);
+    if (!found) {
+      if (writer_->compiler_driver_->GetVerificationResults()->IsClassRejected(class_ref)) {
+        // The oat class status is used only for verification of resolved classes,
+        // so use kStatusErrorResolved whether the class was resolved or unresolved
+        // during compile-time verification.
+        status = mirror::Class::kStatusErrorResolved;
+      } else {
+        status = mirror::Class::kStatusNotReady;
+      }
     }
 
     writer_->oat_classes_.emplace_back(offset_,
@@ -1332,19 +1331,12 @@ class OatWriter::WriteCodeMethodVisitor : public OatDexMethodVisitor {
                 PatchCodeAddress(&patched_code_, literal_offset, target_offset);
                 break;
               }
-              case LinkerPatch::Type::kMethod: {
-                ArtMethod* method = GetTargetMethod(patch);
-                PatchMethodAddress(&patched_code_, literal_offset, method);
-                break;
-              }
-              case LinkerPatch::Type::kString: {
-                mirror::String* string = GetTargetString(patch);
-                PatchObjectAddress(&patched_code_, literal_offset, string);
-                break;
-              }
-              case LinkerPatch::Type::kType: {
-                mirror::Class* type = GetTargetType(patch);
-                PatchObjectAddress(&patched_code_, literal_offset, type);
+              case LinkerPatch::Type::kMethodRelative: {
+                uint32_t target_offset = GetTargetMethodOffset(GetTargetMethod(patch));
+                writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
+                                                                     patch,
+                                                                     offset_ + literal_offset,
+                                                                     target_offset);
                 break;
               }
               case LinkerPatch::Type::kBakerReadBarrierBranch: {
@@ -1468,6 +1460,15 @@ class OatWriter::WriteCodeMethodVisitor : public OatDexMethodVisitor {
     }
   }
 
+  uint32_t GetTargetMethodOffset(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
+    DCHECK(writer_->HasBootImage());
+    method = writer_->image_writer_->GetImageMethodAddress(method);
+    size_t oat_index = writer_->image_writer_->GetOatIndexForDexFile(dex_file_);
+    uintptr_t oat_data_begin = writer_->image_writer_->GetOatDataBegin(oat_index);
+    // TODO: Clean up offset types. The target offset must be treated as signed.
+    return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(method) - oat_data_begin);
+  }
+
   uint32_t GetTargetObjectOffset(mirror::Object* object) REQUIRES_SHARED(Locks::mutator_lock_) {
     DCHECK(writer_->HasBootImage());
     object = writer_->image_writer_->GetImageAddress(object);
@@ -1489,34 +1490,6 @@ class OatWriter::WriteCodeMethodVisitor : public OatDexMethodVisitor {
     }
     // Note: We only patch targeting Objects in image which is in the low 4gb.
     uint32_t address = PointerToLowMemUInt32(object);
-    DCHECK_LE(offset + 4, code->size());
-    uint8_t* data = &(*code)[offset];
-    data[0] = address & 0xffu;
-    data[1] = (address >> 8) & 0xffu;
-    data[2] = (address >> 16) & 0xffu;
-    data[3] = (address >> 24) & 0xffu;
-  }
-
-  void PatchMethodAddress(std::vector<uint8_t>* code, uint32_t offset, ArtMethod* method)
-      REQUIRES_SHARED(Locks::mutator_lock_) {
-    if (writer_->HasBootImage()) {
-      method = writer_->image_writer_->GetImageMethodAddress(method);
-    } else if (kIsDebugBuild) {
-      // NOTE: We're using linker patches for app->boot references when the image can
-      // be relocated and therefore we need to emit .oat_patches. We're not using this
-      // for app->app references, so check that the method is an image method.
-      std::vector<gc::space::ImageSpace*> image_spaces =
-          Runtime::Current()->GetHeap()->GetBootImageSpaces();
-      bool contains_method = false;
-      for (gc::space::ImageSpace* image_space : image_spaces) {
-        size_t method_offset = reinterpret_cast<const uint8_t*>(method) - image_space->Begin();
-        contains_method |=
-            image_space->GetImageHeader().GetMethodsSection().Contains(method_offset);
-      }
-      CHECK(contains_method);
-    }
-    // Note: We only patch targeting ArtMethods in image which is in the low 4gb.
-    uint32_t address = PointerToLowMemUInt32(method);
     DCHECK_LE(offset + 4, code->size());
     uint8_t* data = &(*code)[offset];
     data[0] = address & 0xffu;

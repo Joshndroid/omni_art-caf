@@ -30,13 +30,13 @@
 #include "base/mutex.h"
 #include "gc_root.h"
 #include "lock_word.h"
-#include "object_callbacks.h"
 #include "read_barrier_option.h"
 #include "thread_state.h"
 
 namespace art {
 
 class ArtMethod;
+class IsMarkedVisitor;
 class LockWord;
 template<class T> class Handle;
 class StackVisitor;
@@ -181,8 +181,11 @@ class Monitor {
       REQUIRES_SHARED(Locks::mutator_lock_)
       NO_THREAD_SAFETY_ANALYSIS;  // For m->Install(self)
 
-  void LogContentionEvent(Thread* self, uint32_t wait_ms, uint32_t sample_percent,
-                          const char* owner_filename, int32_t owner_line_number)
+  void LogContentionEvent(Thread* self,
+                          uint32_t wait_ms,
+                          uint32_t sample_percent,
+                          ArtMethod* owner_method,
+                          uint32_t owner_dex_pc)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   static void FailedUnlock(mirror::Object* obj,

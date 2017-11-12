@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011 The Android Open Source Project
+ * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,27 +14,21 @@
  * limitations under the License.
  */
 
-#ifndef ART_COMPILER_COMPILED_CLASS_H_
-#define ART_COMPILER_COMPILED_CLASS_H_
+#ifndef ART_RUNTIME_BASE_ARENA_ALLOCATOR_INL_H_
+#define ART_RUNTIME_BASE_ARENA_ALLOCATOR_INL_H_
 
-#include "mirror/class.h"
+#include "arena_allocator.h"
 
 namespace art {
+namespace arena_allocator {
 
-class CompiledClass {
- public:
-  explicit CompiledClass(mirror::Class::Status status) : status_(status) {}
-  ~CompiledClass() {}
-  mirror::Class::Status GetStatus() const {
-    return status_;
-  }
-  void SetStatus(mirror::Class::Status status) {
-    status_ = status;
-  }
- private:
-  mirror::Class::Status status_;
-};
+static constexpr bool kArenaAllocatorPreciseTracking = kArenaAllocatorCountAllocations;
 
+static constexpr size_t kArenaDefaultSize = kArenaAllocatorPreciseTracking
+                                                ? 32
+                                                : 128 * KB;
+
+}  // namespace arena_allocator
 }  // namespace art
 
-#endif  // ART_COMPILER_COMPILED_CLASS_H_
+#endif  // ART_RUNTIME_BASE_ARENA_ALLOCATOR_INL_H_

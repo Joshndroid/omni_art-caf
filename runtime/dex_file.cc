@@ -204,7 +204,7 @@ std::unique_ptr<const DexFile> DexFile::Open(const std::string& location,
                                                  verify_checksum,
                                                  error_msg);
   if (dex_file != nullptr) {
-    dex_file->mem_map_.reset(map.release());
+    dex_file->mem_map_ = std::move(map);
   }
   return dex_file;
 }
@@ -323,7 +323,7 @@ std::unique_ptr<const DexFile> DexFile::OpenFile(int fd,
                                                  verify_checksum,
                                                  error_msg);
   if (dex_file != nullptr) {
-    dex_file->mem_map_.reset(map.release());
+    dex_file->mem_map_ = std::move(map);
   }
 
   return dex_file;
@@ -397,7 +397,7 @@ std::unique_ptr<const DexFile> DexFile::OpenOneDexFileFromZip(const ZipArchive& 
     }
     return nullptr;
   }
-  dex_file->mem_map_.reset(map.release());
+  dex_file->mem_map_ = std::move(map);
   if (!dex_file->DisableWrite()) {
     *error_msg = StringPrintf("Failed to make dex file '%s' read only", location.c_str());
     *error_code = ZipOpenErrorCode::kMakeReadOnlyError;
@@ -1072,13 +1072,13 @@ bool DexFile::DecodeDebugLocalInfo(const CodeItem* code_item, bool is_static, ui
                      << code_item->registers_size_ << ") in " << GetLocation();
           return false;
         }
-        if (!local_in_reg[reg].is_live_) {
-          LOG(ERROR) << "invalid stream - end without start in " << GetLocation();
-          return false;
+        // If the register is live, close it properly. Otherwise, closing an already
+        // closed register is sloppy, but harmless if no further action is taken.
+        if (local_in_reg[reg].is_live_) {
+          local_in_reg[reg].end_address_ = address;
+          local_cb(context, local_in_reg[reg]);
+          local_in_reg[reg].is_live_ = false;
         }
-        local_in_reg[reg].end_address_ = address;
-        local_cb(context, local_in_reg[reg]);
-        local_in_reg[reg].is_live_ = false;
         break;
       }
       case DBG_RESTART_LOCAL: {

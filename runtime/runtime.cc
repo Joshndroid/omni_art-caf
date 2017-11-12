@@ -134,6 +134,7 @@
 #include "native_stack_dump.h"
 #include "oat_file.h"
 #include "oat_file_manager.h"
+#include "object_callbacks.h"
 #include "os.h"
 #include "parsed_options.h"
 #include "jit/profile_saver.h"
@@ -339,6 +340,16 @@ Runtime::~Runtime() {
     jit_->DeleteThreadPool();
   }
 
+  // Make sure our internal threads are dead before we start tearing down things they're using.
+  Dbg::StopJdwp();
+  delete signal_catcher_;
+
+  // Make sure all other non-daemon threads have terminated, and all daemon threads are suspended.
+  {
+    ScopedTrace trace2("Delete thread list");
+    thread_list_->ShutDown();
+  }
+
   // TODO Maybe do some locking.
   for (auto& agent : agents_) {
     agent.Unload();
@@ -349,15 +360,9 @@ Runtime::~Runtime() {
     plugin.Unload();
   }
 
-  // Make sure our internal threads are dead before we start tearing down things they're using.
-  Dbg::StopJdwp();
-  delete signal_catcher_;
+  // Finally delete the thread list.
+  delete thread_list_;
 
-  // Make sure all other non-daemon threads have terminated, and all daemon threads are suspended.
-  {
-    ScopedTrace trace2("Delete thread list");
-    delete thread_list_;
-  }
   // Delete the JIT after thread list to ensure that there is no remaining threads which could be
   // accessing the instrumentation when we delete it.
   if (jit_ != nullptr) {
@@ -386,6 +391,7 @@ Runtime::~Runtime() {
   low_4gb_arena_pool_.reset();
   arena_pool_.reset();
   jit_arena_pool_.reset();
+  protected_fault_page_.reset();
   MemMap::Shutdown();
 
   // TODO: acquire a static mutex on Runtime to avoid racing.
@@ -474,6 +480,10 @@ struct AbortState {
 void Runtime::Abort(const char* msg) {
   gAborting++;  // set before taking any locks
 
+#ifdef ART_TARGET_ANDROID
+  android_set_abort_message(msg);
+#endif
+
   // Ensure that we don't have multiple threads trying to abort at once,
   // which would result in significantly worse diagnostics.
   MutexLock mu(Thread::Current(), *Locks::abort_lock_);
@@ -559,7 +569,7 @@ void Runtime::SweepSystemWeaks(IsMarkedVisitor* visitor) {
 bool Runtime::ParseOptions(const RuntimeOptions& raw_options,
                            bool ignore_unrecognized,
                            RuntimeArgumentMap* runtime_options) {
-  InitLogging(/* argv */ nullptr, Aborter);  // Calls Locks::Init() as a side effect.
+  InitLogging(/* argv */ nullptr, Abort);  // Calls Locks::Init() as a side effect.
   bool parsed = ParsedOptions::Parse(raw_options, ignore_unrecognized, runtime_options);
   if (!parsed) {
     LOG(ERROR) << "Failed to parse options";
@@ -829,7 +839,7 @@ void Runtime::InitNonZygoteOrPostFork(
 
 void Runtime::StartSignalCatcher() {
   if (!is_zygote_) {
-    signal_catcher_ = new SignalCatcher(stack_trace_file_);
+    signal_catcher_ = new SignalCatcher(stack_trace_file_, use_tombstoned_traces_);
   }
 }
 
@@ -1012,6 +1022,30 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
 
   MemMap::Init();
 
+  // Try to reserve a dedicated fault page. This is allocated for clobbered registers and sentinels.
+  // If we cannot reserve it, log a warning.
+  // Note: We allocate this first to have a good chance of grabbing the page. The address (0xebad..)
+  //       is out-of-the-way enough that it should not collide with boot image mapping.
+  // Note: Don't request an error message. That will lead to a maps dump in the case of failure,
+  //       leading to logspam.
+  {
+    constexpr uintptr_t kSentinelAddr =
+        RoundDown(static_cast<uintptr_t>(Context::kBadGprBase), kPageSize);
+    protected_fault_page_.reset(MemMap::MapAnonymous("Sentinel fault page",
+                                                     reinterpret_cast<uint8_t*>(kSentinelAddr),
+                                                     kPageSize,
+                                                     PROT_NONE,
+                                                     /* low_4g */ true,
+                                                     /* reuse */ false,
+                                                     /* error_msg */ nullptr));
+    if (protected_fault_page_ == nullptr) {
+      LOG(WARNING) << "Could not reserve sentinel fault page";
+    } else if (reinterpret_cast<uintptr_t>(protected_fault_page_->Begin()) != kSentinelAddr) {
+      LOG(WARNING) << "Could not reserve sentinel fault page at the right address.";
+      protected_fault_page_.reset();
+    }
+  }
+
   using Opt = RuntimeArgumentMap;
   VLOG(startup) << "Runtime::Init -verbose:startup enabled";
 
@@ -1040,6 +1074,11 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   abort_ = runtime_options.GetOrDefault(Opt::HookAbort);
 
   default_stack_size_ = runtime_options.GetOrDefault(Opt::StackSize);
+  use_tombstoned_traces_ = runtime_options.GetOrDefault(Opt::UseTombstonedTraces);
+#if !defined(ART_TARGET_ANDROID)
+  CHECK(!use_tombstoned_traces_)
+      << "-Xusetombstonedtraces is only supported in an Android environment";
+#endif
   stack_trace_file_ = runtime_options.ReleaseOrDefault(Opt::StackTraceFile);
 
   compiler_executable_ = runtime_options.ReleaseOrDefault(Opt::Compiler);
@@ -1805,11 +1844,6 @@ void Runtime::VisitThreadRoots(RootVisitor* visitor, VisitRootFlags flags) {
   thread_list_->VisitRoots(visitor, flags);
 }
 
-size_t Runtime::FlipThreadRoots(Closure* thread_flip_visitor, Closure* flip_callback,
-                                gc::collector::GarbageCollector* collector) {
-  return thread_list_->FlipThreadRoots(thread_flip_visitor, flip_callback, collector);
-}
-
 void Runtime::VisitRoots(RootVisitor* visitor, VisitRootFlags flags) {
   VisitNonConcurrentRoots(visitor, flags);
   VisitConcurrentRoots(visitor, flags);
@@ -2322,14 +2356,6 @@ void Runtime::RemoveSystemWeakHolder(gc::AbstractSystemWeakHolder* holder) {
   if (it != system_weak_holders_.end()) {
     system_weak_holders_.erase(it);
   }
-}
-
-NO_RETURN
-void Runtime::Aborter(const char* abort_message) {
-#ifdef ART_TARGET_ANDROID
-  android_set_abort_message(abort_message);
-#endif
-  Runtime::Abort(abort_message);
 }
 
 RuntimeCallbacks* Runtime::GetRuntimeCallbacks() {

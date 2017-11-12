@@ -46,7 +46,7 @@ export RUN="${progdir}/etc/run-test-jar"
 export DEX_LOCATION=/data/run-test/${test_dir}
 export NEED_DEX="true"
 export USE_JACK="true"
-export SMALI_ARGS="--experimental"
+export SMALI_ARGS=""
 
 # If dx was not set by the environment variable, assume it is in the path.
 if [ -z "$DX" ]; then
@@ -728,8 +728,10 @@ export TEST_NAME=`basename ${test_dir}`
 # Checker when compiled with Optimizing on host.
 if [[ "$TEST_NAME" =~ ^[0-9]+-checker- ]]; then
   if [ "$runtime" = "art" -a "$image_suffix" = "" -a "$USE_JACK" = "true" ]; then
-    # In no-prebuild mode, the compiler only quickens so disable the checker.
-    if [ "$prebuild_mode" = "yes" ]; then
+    # In no-prebuild mode, the compiler is only invoked if both dex2oat and
+    # patchoat are available. Disable Checker otherwise (b/22552692).
+    if [ "$prebuild_mode" = "yes" ] \
+         || [ "$have_patchoat" = "yes" -a "$have_dex2oat" = "yes" ]; then
       run_checker="yes"
 
       if [ "$target_mode" = "no" ]; then

@@ -33,8 +33,8 @@
 #include "base/enums.h"
 #include "base/length_prefixed_array.h"
 #include "base/macros.h"
+#include "class_table.h"
 #include "driver/compiler_driver.h"
-#include "gc/space/space.h"
 #include "image.h"
 #include "lock_word.h"
 #include "mem_map.h"
@@ -47,6 +47,10 @@
 
 namespace art {
 namespace gc {
+namespace accounting {
+template <size_t kAlignment> class SpaceBitmap;
+typedef SpaceBitmap<kObjectAlignment> ContinuousSpaceBitmap;
+}  // namespace accounting
 namespace space {
 class ImageSpace;
 }  // namespace space
@@ -57,7 +61,6 @@ class ClassLoader;
 }  // namespace mirror
 
 class ClassLoaderVisitor;
-class ClassTable;
 class ImtConflictTable;
 
 static constexpr int kInvalidFd = -1;

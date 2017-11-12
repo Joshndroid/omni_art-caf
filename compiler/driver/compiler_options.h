@@ -31,7 +31,7 @@ namespace art {
 
 namespace verifier {
   class VerifierDepsTest;
-}
+}  // namespace verifier
 
 class DexFile;
 
@@ -236,6 +236,10 @@ class CompilerOptions FINAL {
   }
 
   bool ParseCompilerOption(const StringPiece& option, UsageFn Usage);
+
+  void SetNonPic() {
+    compile_pic_ = false;
+  }
 
   const std::string& GetDumpCfgFileName() const {
     return dump_cfg_file_name_;
